@@ -1,0 +1,6 @@
+numpy>=1.19.0
+torch>=1.9.0
+transformers>=4.20.0  # For use with transformer models
+tqdm>=4.64.0          # Progress bars
+matplotlib>=3.5.0     # For visualization of ARC grids
+pytest>=7.0.0         # For running tests 
