@@ -363,19 +363,112 @@ def llm_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     return result
 
 
-def task_collate_fn(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def task_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Collate function for Task-Datasets that return complete tasks.
-    This function maintains the original structure of the tasks.
+    This function combines all training and test examples from all tasks in the batch
+    into a single dictionary format compatible with the trainer.
     
     Args:
         batch: List of task dictionaries
         
     Returns:
-        List of task dictionaries without changes
+        Dictionary with all examples from all tasks, with appropriate is_test flags
     """
-    # For task datasets we simply return the list of tasks
-    return batch
+    # Sammeln aller Beispiele (Training und Test) aus allen Tasks
+    all_input_ids = []
+    all_output_ids = []
+    all_is_test = []  # True für Test-Beispiele, False für Training-Beispiele
+    task_ids_list = []
+    
+    # Sammle zuerst alle Beispiele
+    for task in batch:
+        task_id = task['task_id']
+        
+        # Sammle alle Trainingsbeispiele
+        for example in task['train']:
+            sample_input_ids = example['input_ids']
+            sample_output_ids = example['output_ids']
+            
+            # Konvertiere zu Listen, falls es Tensoren sind
+            if isinstance(sample_input_ids, torch.Tensor):
+                sample_input_ids = sample_input_ids.tolist()
+            if isinstance(sample_output_ids, torch.Tensor):
+                sample_output_ids = sample_output_ids.tolist()
+            
+            all_input_ids.append(sample_input_ids)
+            all_output_ids.append(sample_output_ids)
+            all_is_test.append(False)  # Trainingsbeispiel
+            task_ids_list.append(task_id)
+        
+        # Sammle alle Testbeispiele
+        for example in task['test']:
+            sample_input_ids = example['input_ids']
+            
+            # Für Testbeispiele muss output_ids vorhanden sein
+            if 'output_ids' in example:
+                sample_output_ids = example['output_ids']
+                
+                # Konvertiere zu Listen, falls es Tensoren sind
+                if isinstance(sample_input_ids, torch.Tensor):
+                    sample_input_ids = sample_input_ids.tolist()
+                if isinstance(sample_output_ids, torch.Tensor):
+                    sample_output_ids = sample_output_ids.tolist()
+                
+                all_input_ids.append(sample_input_ids)
+                all_output_ids.append(sample_output_ids)
+                all_is_test.append(True)  # Testbeispiel
+                task_ids_list.append(task_id)
+    
+    # Wenn keine gültigen Beispiele gefunden wurden
+    if not all_input_ids:
+        return {
+            "input_ids": torch.empty((0, 0), dtype=torch.long),
+            "output_ids": torch.empty((0, 0), dtype=torch.long),
+            "attention_mask": torch.empty((0, 0), dtype=torch.long),
+            "is_test": torch.empty(0, dtype=torch.bool),
+            "task_data": batch,
+            "task_ids": []
+        }
+    
+    # Finde die maximale Länge der Sequenzen
+    max_input_len = max(len(ids) for ids in all_input_ids)
+    max_output_len = max(len(ids) for ids in all_output_ids)
+    
+    # Auffüllen der Sequenzen auf gleiche Länge
+    padded_input_ids = []
+    padded_output_ids = []
+    attention_masks = []
+    
+    for i in range(len(all_input_ids)):
+        # Auffüllen der input_ids und Erstellen der Aufmerksamkeitsmaske
+        sample_input_ids = all_input_ids[i]
+        
+        padded_input = sample_input_ids + [TokenizerConfig.PAD_ID] * (max_input_len - len(sample_input_ids))
+        attention_mask = [1] * len(sample_input_ids) + [0] * (max_input_len - len(sample_input_ids))
+        
+        padded_input_ids.append(padded_input)
+        attention_masks.append(attention_mask)
+        
+        # Auffüllen der output_ids
+        sample_output_ids = all_output_ids[i]
+        padded_output = sample_output_ids + [TokenizerConfig.PAD_ID] * (max_output_len - len(sample_output_ids))
+        padded_output_ids.append(padded_output)
+    
+    # Erstellen des Ergebnis-Dictionaries
+    result = {
+        # Gemeinsame Felder für den Trainer
+        "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+        "output_ids": torch.tensor(padded_output_ids, dtype=torch.long),
+        "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
+        "is_test": torch.tensor(all_is_test, dtype=torch.bool),
+        
+        # Bewahre die Originaldaten für spezielle Verarbeitung
+        "task_data": batch,
+        "task_ids": task_ids_list
+    }
+    
+    return result
 
 
 class ARCV2LLMDataset(Dataset, ARCBaseDataset):
